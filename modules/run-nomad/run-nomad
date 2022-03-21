@@ -3,6 +3,12 @@
 
 set -e
 
+source "/opt/gruntwork/bash-commons/log.sh"
+source "/opt/gruntwork/bash-commons/string.sh"
+source "/opt/gruntwork/bash-commons/assert.sh"
+source "/opt/gruntwork/bash-commons/aws-wrapper.sh"
+
+
 readonly NOMAD_CONFIG_FILE="default.hcl"
 readonly SYSTEMD_CONFIG_PATH="/etc/systemd/system/nomad.service"
 
@@ -11,6 +17,9 @@ readonly EC2_INSTANCE_DYNAMIC_DATA_URL="http://169.254.169.254/latest/dynamic"
 
 readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 readonly SCRIPT_NAME="$(basename "$0")"
+
+readonly MAX_RETRIES=30
+readonly SLEEP_BETWEEN_RETRIES_SEC=10
 
 function print_usage {
   echo
@@ -87,14 +96,17 @@ function split_by_lines {
   done
 }
 
+
+
+
 function lookup_path_in_instance_metadata {
-  local readonly path="$1"
-  curl --silent --location "$EC2_INSTANCE_METADATA_URL/$path/"
+  local -r path="$1"
+  curl --silent --show-error --location "$EC2_INSTANCE_METADATA_URL/$path/"
 }
 
 function lookup_path_in_instance_dynamic_data {
-  local readonly path="$1"
-  curl --silent --location "$EC2_INSTANCE_DYNAMIC_DATA_URL/$path/"
+  local -r path="$1"
+  curl --silent --show-error --location "$EC2_INSTANCE_DYNAMIC_DATA_URL/$path/"
 }
 
 function get_instance_ip_address {
@@ -122,12 +134,96 @@ function assert_is_installed {
   fi
 }
 
+function get_instance_tags {
+  local -r instance_id="$1"
+  local -r instance_region="$2"
+  local tags=""
+  local count_tags=""
+
+  log_info "Looking up tags for Instance $instance_id in $instance_region"
+  for (( i=1; i<="$MAX_RETRIES"; i++ )); do
+    tags=$(aws ec2 describe-tags \
+      --region "$instance_region" \
+      --filters "Name=resource-type,Values=instance" "Name=resource-id,Values=${instance_id}")
+    count_tags=$(echo $tags | jq -r ".Tags? | length")
+    if [[ "$count_tags" -gt 0 ]]; then
+      log_info "This Instance $instance_id in $instance_region has Tags."
+      echo "$tags"
+      return
+    else
+      log_warn "This Instance $instance_id in $instance_region does not have any Tags."
+      log_warn "Will sleep for $SLEEP_BETWEEN_RETRIES_SEC seconds and try again."
+      sleep "$SLEEP_BETWEEN_RETRIES_SEC"
+    fi
+  done
+
+  log_error "Could not find Instance Tags for $instance_id in $instance_region after $MAX_RETRIES retries."
+  exit 1
+}
+
+function get_asg_size {
+  local -r asg_name="$1"
+  local -r aws_region="$2"
+  local asg_json=""
+
+  log_info "Looking up the size of the Auto Scaling Group $asg_name in $aws_region"
+  asg_json=$(aws autoscaling describe-auto-scaling-groups --region "$aws_region" --auto-scaling-group-names "$asg_name")
+  echo "$asg_json" | jq -r '.AutoScalingGroups[0].DesiredCapacity'
+}
+
+function get_cluster_size {
+  local -r instance_tags="$1"
+  local -r aws_region="$2"
+
+  local asg_name=""
+  asg_name=$(get_tag_value "$instance_tags" "$AWS_ASG_TAG_KEY")
+  if [[ -z "$asg_name" ]]; then
+    log_warn "This EC2 Instance does not appear to be part of an Auto Scaling Group, so cannot determine cluster size. Setting cluster size to 1."
+    echo 1
+  else
+    get_asg_size "$asg_name" "$aws_region"
+  fi
+}
+
+# Get the value for a specific tag from the tags JSON returned by the AWS describe-tags:
+# https://docs.aws.amazon.com/cli/latest/reference/ec2/describe-tags.html
+function get_tag_value {
+  local -r tags="$1"
+  local -r tag_key="$2"
+
+  echo "$tags" | jq -r ".Tags[] | select(.Key == \"$tag_key\") | .Value"
+}
+
+function generate_bootstrap_acl_token {
+  local -r max_retries="$1"
+  local -r sleep_between_retries="$2"
+
+  local token
+
+  for (( i=0; i<"$max_retries"; i++ )); do
+    token=$(nomad acl bootstrap -json | jq '.SecretID' -r)
+    if [[ "$token" == "" ]]; then
+      log_info "Token could not be obtained, retrying."
+      sleep $sleep_between_retries
+    else
+      echo $token
+      return
+    fi
+  done
+
+  log_error "Unable to obtain ACL token. Aborting."
+  exit 1
+}
+
 function generate_nomad_config {
   local readonly server="$1"
   local readonly client="$2"
   local readonly num_servers="$3"
   local readonly config_dir="$4"
   local readonly user="$5"
+  local -r enable_acl="${6}"
+  local -r consul_cluster_tag_value="${7}"
+  local -r enable_telemetry="${8}"
   local readonly config_path="$config_dir/$NOMAD_CONFIG_FILE"
 
   local instance_id=""
@@ -149,6 +245,8 @@ server {
 }
 EOF
 )
+instance_id="nomad-server-$instance_id"
+
   fi
 
   local client_config=""
@@ -159,7 +257,63 @@ client {
 }
 EOF
 )
+instance_id="nomad-client-$instance_id"
   fi
+
+  local acl_configuration=""
+   if [[ "$enable_acl" == "true" ]]; then
+      log_info "Creating ACL configuration"
+      acl_configuration=$(
+      cat <<EOF
+acl = {
+  enabled = true
+}
+EOF
+)
+   fi
+
+  local consul_config=""
+  if [[ "$enable_acl" == "true" ]]; then
+     local -r aws_region=$(aws_get_instance_region)
+     log_info "Getting consul ACL token for nomad clients"
+       if [[ -z "$consul_cluster_tag_value" ]]; then
+       log_error "Provide consul cluster tag value to determine the AWS consul cluster & fetch ACL token"
+       exit 1
+       else
+       consul_config=$(
+       cat <<EOF
+consul {
+  address = "127.0.0.1:8500",
+  token = "$(read_acl_token "$consul_cluster_tag_value" "nomad" "$aws_region" 1 0)"
+}
+EOF
+)                        
+       fi
+  else
+    consul_config=$(
+    cat <<EOF
+consul {
+ address = "127.0.0.1:8500"
+ }
+EOF
+)
+ fi
+
+ local telemetry_config=""
+ if [[ "$enable_telemetry" == "true" ]]; then
+    log_info "generating telemetry config"
+    telemetry_config=$(
+    cat <<EOF
+telemetry {
+  collection_interval = "1s"
+  disable_hostname = true
+  prometheus_metrics = true
+  publish_allocation_metrics = true
+  publish_node_metrics = false
+}
+EOF
+)
+ fi
 
   log_info "Creating default Nomad config file in $config_path"
   cat > "$config_path" <<EOF
@@ -167,20 +321,18 @@ datacenter = "$availability_zone"
 name       = "$instance_id"
 region     = "$instance_region"
 bind_addr  = "0.0.0.0"
-
 advertise {
   http = "$instance_ip_address"
   rpc  = "$instance_ip_address"
   serf = "$instance_ip_address"
 }
-
+$acl_configuration
 $client_config
-
 $server_config
 
-consul {
-  address = "127.0.0.1:8500"
-}
+$consul_config
+
+$telemetry_config
 EOF
   chown "$user:$user" "$config_path"
 }
@@ -225,7 +377,6 @@ KillMode=process
 Restart=on-failure
 LimitNOFILE=65536
 $(split_by_lines "Environment=" "${environment[@]}")
-
 EOF
 )
 
@@ -277,6 +428,8 @@ function run {
   local use_sudo=""
   local environment=()
   local all_args=()
+  local consul_cluster_tag_value=""
+  
 
   while [[ $# > 0 ]]; do
     local key="$1"
@@ -332,6 +485,14 @@ function run {
         cluster_tag_value="$2"
         shift
         ;;
+      --consul-cluster-tag-value)
+        assert_not_empty "$key" "$2"
+        consul_cluster_tag_value="$2"
+        shift
+        ;;
+      --enable_telemetry)
+        enable_telemetry="true"
+        ;;
       --skip-nomad-config)
         skip_nomad_config="true"
         ;;
@@ -341,6 +502,14 @@ function run {
       --environment)
         assert_not_empty "$key" "$2"
         environment+=("$2")
+        shift
+        ;;
+      --enable-acl)
+        enable_acl="true"
+        ;;
+      --acl-storage-type)
+        assert_not_empty "$key" "$2"
+        acl_storage_type="$2"
         shift
         ;;
       --help)
@@ -356,6 +525,29 @@ function run {
 
     shift
   done
+
+  if [[ "$enable_acl" == "true" ]]; then
+    if [ -z "$acl_storage_type" ] || [ "$acl_storage_type" == "" ]; then
+      log_error "You must specify an option for the --acl-storage-type parameter when --enable-acl is specified."
+      exit 1
+    fi
+
+    local storage_type_matched="false"
+
+    # Source appropriate storage provider script
+    case "$acl_storage_type" in 
+        'ssm' | 'SSM')
+        storage_type_matched="true"
+        source ${SCRIPT_DIR}/nomad-bootstrap-ssm.sh;;
+
+        *)
+        if [ $storage_type_matched="false" ]; then
+            log_error "ACL storage type '${acl_storage_type}' is not supported."
+            exit 1
+        fi;;
+
+    esac
+  fi
 
   if [[ "$server" == "true" ]]; then
     assert_not_empty "--num-servers" "$num_servers"
@@ -400,11 +592,46 @@ function run {
   if [[ "$skip_nomad_config" == "true" ]]; then
     log_info "The --skip-nomad-config flag is set, so will not generate a default Nomad config file."
   else
-    generate_nomad_config "$server" "$client" "$num_servers" "$config_dir" "$user"
+    generate_nomad_config "$server" "$client" "$num_servers" "$config_dir" "$user" "$enable_acl" "$consul_cluster_tag_value" "$enable_telemetry"
   fi
 
   generate_systemd_config "$SYSTEMD_CONFIG_PATH" "$config_dir" "$data_dir" "$bin_dir" "$systemd_stdout" "$systemd_stderr" "$user" "$use_sudo" "${environment[@]}"
   start_nomad
+
+  if [[ "$enable_acl" == "true" ]]; then
+    local -r asg_name=$(aws_wrapper_get_asg_name $MAX_RETRIES $SLEEP_BETWEEN_RETRIES_SEC)
+     local -r aws_region=$(aws_get_instance_region)
+    local -r instance_id=$(aws_get_instance_id)
+
+    local bootstrap_token
+
+    # Calculate the rally point server for the ASG
+    local -r rally_point_hostname=$(aws_wrapper_get_asg_rally_point $asg_name $aws_region "false")
+    log_info "Calculated rally point instance is $rally_point_hostname."
+    local -r local_hostname=$(aws_wrapper_get_hostname)
+    log_info "Local hostname is $local_hostname"
+
+    if [[ "$rally_point_hostname" == "$local_hostname" ]]; then
+      log_info "Checking if bootstrap token already exists"
+      local -r existing_token=$(read_acl_token $cluster_tag_value "bootstrap" $aws_region 1 0 "true")
+
+      if [[ "$existing_token" == "" ]] && [ "${server}" == "true" ]; then
+        log_info "Generating bootstrap ACL token"
+        bootstrap_token=$(generate_bootstrap_acl_token $MAX_RETRIES $SLEEP_BETWEEN_RETRIES_SEC)
+        log_info "Persisting bootstrap token to SSM parameter"
+        write_acl_token $bootstrap_token $cluster_tag_value "bootstrap" $aws_region "ssm"
+      else
+        log_info "Bootstrap token already exists, skipping"
+      fi      
+    fi
+
+    # If the bootstrap token isn't already read (i.e. if this is running on the non rally point node)
+    # then we need to read it.
+    if [[ -z "$bootstrap_token" ]]; then
+      log_info "Acquiring bootstrap token"
+      bootstrap_token=$(read_acl_token $cluster_tag_value "bootstrap" $aws_region)
+    fi
+  fi
 }
 
 run "$@"
