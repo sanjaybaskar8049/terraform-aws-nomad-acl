@@ -221,9 +221,15 @@ function generate_nomad_config {
   local readonly num_servers="$3"
   local readonly config_dir="$4"
   local readonly user="$5"
-  local -r enable_acl="${6}"
+  local -r enable_acl="${6:-false}"
   local -r consul_cluster_tag_value="${7}"
   local -r enable_telemetry="${8}"
+  local -r enable_vault="${9:-false}"
+  local -r vault_addr="${10}"
+  local -r vault_role="${11}"
+  local -r vault_token="${12}"
+
+
   local readonly config_path="$config_dir/$NOMAD_CONFIG_FILE"
 
   local instance_id=""
@@ -299,6 +305,40 @@ EOF
 )
  fi
 
+ local vault_config=""
+ if [[ "$enable_vault" == "true" ]]; then
+   if [[ "$client" == "true" ]]; then
+    log_info "generating vault client config"
+    vault_config=$(
+    cat <<EOF
+vault {
+  enabled = true
+  address = "$vault_addr"
+  create_from_role = "$vault_role"
+}
+EOF
+)
+  else
+    log_info "generating vault server config"
+    if [ -z "$vault_token" ] || [ "$vault_token" == "" ]; then
+    log_error "You must specify an option for the --vault-token parameter when --enable-vault and --server is specified."
+    exit 1
+    fi
+  vault_config=$(
+    cat <<EOF
+vault {
+  enabled = true
+  address = "$vault_addr"
+  token   = "$vault_token"
+  create_from_role = "$vault_role"
+}
+EOF
+)
+ fi
+ fi
+
+
+
  local telemetry_config=""
  if [[ "$enable_telemetry" == "true" ]]; then
     log_info "generating telemetry config"
@@ -329,6 +369,7 @@ advertise {
 $acl_configuration
 $client_config
 $server_config
+$vault_config
 
 $consul_config
 
@@ -429,6 +470,8 @@ function run {
   local environment=()
   local all_args=()
   local consul_cluster_tag_value=""
+  local vault_addr=""
+  local enable_vault="false"
   
 
   while [[ $# > 0 ]]; do
@@ -490,6 +533,21 @@ function run {
         consul_cluster_tag_value="$2"
         shift
         ;;
+      --vault-addr)
+        assert_not_empty "$key" "$2"
+        vault_addr="$2"
+        shift
+        ;;
+      --vault-role)
+        assert_not_empty "$key" "$2"
+        vault_role="$2"
+        shift
+        ;;
+      --vault-token)
+        assert_not_empty "$key" "$2"
+        vault_token="$2"
+        shift
+        ;;
       --enable_telemetry)
         enable_telemetry="true"
         ;;
@@ -506,6 +564,9 @@ function run {
         ;;
       --enable-acl)
         enable_acl="true"
+        ;;
+      --enable-vault)
+        enable_vault="true"
         ;;
       --acl-storage-type)
         assert_not_empty "$key" "$2"
@@ -558,6 +619,17 @@ function run {
     exit 1
   fi
 
+  if [[ "$server" == "true" ]] && [[ "$enable_vault" == "true" ]]; then
+    assert_not_empty "--vault-addr" "$vault_addr"
+    assert_not_empty "--vault-role" "$vault_role"
+    assert_not_empty "--vault-token" "$vault_token"
+  fi
+
+  if [[ "$client" == "true" ]] && [[ "$enable_vault" == "true" ]]; then
+    assert_not_empty "--vault-addr" "$vault_addr"
+    assert_not_empty "--vault-role" "$vault_role"
+  fi
+
   if [[ -z "$use_sudo" ]]; then
     if [[ "$client" == "true" ]]; then
       use_sudo="true"
@@ -592,7 +664,7 @@ function run {
   if [[ "$skip_nomad_config" == "true" ]]; then
     log_info "The --skip-nomad-config flag is set, so will not generate a default Nomad config file."
   else
-    generate_nomad_config "$server" "$client" "$num_servers" "$config_dir" "$user" "$enable_acl" "$consul_cluster_tag_value" "$enable_telemetry"
+    generate_nomad_config "$server" "$client" "$num_servers" "$config_dir" "$user" "$enable_acl" "$consul_cluster_tag_value" "$enable_telemetry" "$enable_vault" "$vault_addr" "$vault_role" "$vault_token"
   fi
 
   generate_systemd_config "$SYSTEMD_CONFIG_PATH" "$config_dir" "$data_dir" "$bin_dir" "$systemd_stdout" "$systemd_stderr" "$user" "$use_sudo" "${environment[@]}"
