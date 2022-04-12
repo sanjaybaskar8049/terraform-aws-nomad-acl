@@ -161,6 +161,12 @@ variable "instance_profile_path" {
   default     = "/"
 }
 
+variable "iam_instance_profile_name" {
+  description = "If enable_iam_setup is false then this will be the name of the IAM instance profile to attach"
+  type        = string
+  default     = null
+}
+
 variable "http_port" {
   description = "The port to use for HTTP"
   type        = number
@@ -240,6 +246,7 @@ variable "iam_permissions_boundary" {
   default     = null
 }
 
+<<<<<<< Updated upstream
 variable "acl_store_type" {
   description = "The type of cloud store where the cluster will be able to write / read ACL tokens. If left at the default then no related policies will be created."
   type        = string
@@ -249,3 +256,10 @@ variable "acl_store_type" {
     error_message = "You must specify a supported store type for ACL tokens. Currently the only allowed value is 'ssm'."
   } 
 }
+=======
+variable "enable_iam_setup" {
+  description = "If true, create the IAM Role, IAM Instance Profile, and IAM Policies. If false, these will not be created, and you can pass in your own IAM Instance Profile via var.iam_instance_profile_name."
+  type        = bool
+  default     = true
+}
+>>>>>>> Stashed changes
