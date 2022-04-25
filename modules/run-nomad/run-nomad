@@ -194,6 +194,38 @@ function get_tag_value {
   echo "$tags" | jq -r ".Tags[] | select(.Key == \"$tag_key\") | .Value"
 }
 
+function write_acl_policy {
+  local -r policy_name="$1"
+  local -r policy_hcl="$2"
+  local -r token="$3"
+
+  local token_arg
+
+  if [[ ! "$token" == "" ]]; then
+    token_arg="-token $token"
+  else
+    token_arg=""
+  fi
+
+  echo "$policy_hcl" | nomad acl policy apply $token_arg -description "$policy_name" $policy_name -
+}
+
+function generate_token {
+  local -r policy_name="$1"
+  local -r description="$2"
+  local -r token="$3"
+
+  if [[ ! "$token" == "" ]]; then
+    token_arg="-token $token"
+  else
+    token_arg=""
+  fi
+
+  local -r generated_token=$(nomad acl token create $token_arg -name="$policy_name" -policy="$policy_name" | grep "Secret ID" | cut -d''='' -f 2 | xargs)
+
+  echo $generated_token
+}
+
 function generate_bootstrap_acl_token {
   local -r max_retries="$1"
   local -r sleep_between_retries="$2"
@@ -228,6 +260,7 @@ function generate_nomad_config {
   local -r vault_addr="${10}"
   local -r vault_role="${11}"
   local -r vault_token="${12}"
+  local -r cluster_tag_value="${13}"
 
 
   local readonly config_path="$config_dir/$NOMAD_CONFIG_FILE"
@@ -251,7 +284,7 @@ server {
 }
 EOF
 )
-instance_id="nomad-server-$instance_id"
+instance_id="$cluster_tag_value-$instance_id"
 
   fi
 
@@ -263,7 +296,7 @@ client {
 }
 EOF
 )
-instance_id="nomad-client-$instance_id"
+instance_id="$cluster_tag_value-$instance_id"
   fi
 
   local acl_configuration=""
@@ -664,13 +697,13 @@ function run {
   if [[ "$skip_nomad_config" == "true" ]]; then
     log_info "The --skip-nomad-config flag is set, so will not generate a default Nomad config file."
   else
-    generate_nomad_config "$server" "$client" "$num_servers" "$config_dir" "$user" "$enable_acl" "$consul_cluster_tag_value" "$enable_telemetry" "$enable_vault" "$vault_addr" "$vault_role" "$vault_token"
+    generate_nomad_config "$server" "$client" "$num_servers" "$config_dir" "$user" "$enable_acl" "$consul_cluster_tag_value" "$enable_telemetry" "$enable_vault" "$vault_addr" "$vault_role" "$vault_token" "$cluster_tag_value"
   fi
 
   generate_systemd_config "$SYSTEMD_CONFIG_PATH" "$config_dir" "$data_dir" "$bin_dir" "$systemd_stdout" "$systemd_stderr" "$user" "$use_sudo" "${environment[@]}"
   start_nomad
 
-  if [[ "$enable_acl" == "true" ]]; then
+  if [[ "$enable_acl" == "true" ]] && [ "${server}" == "true" ]; then
     local -r asg_name=$(aws_wrapper_get_asg_name $MAX_RETRIES $SLEEP_BETWEEN_RETRIES_SEC)
      local -r aws_region=$(aws_get_instance_region)
     local -r instance_id=$(aws_get_instance_id)
@@ -692,6 +725,30 @@ function run {
         bootstrap_token=$(generate_bootstrap_acl_token $MAX_RETRIES $SLEEP_BETWEEN_RETRIES_SEC)
         log_info "Persisting bootstrap token to SSM parameter"
         write_acl_token $bootstrap_token $cluster_tag_value "bootstrap" $aws_region "ssm"
+
+        log_info "Checking if additional policies and tokens are needed"
+        POLICY_DIR="/opt/nomad/policy"
+        if [[ -d "$POLICY_DIR" ]] && [ "${server}" == "true" ]; then
+            if [ "$(ls -A $POLICY_DIR)" ]; then
+              for policy in $POLICY_DIR/*; do
+                policy_name="$(basename $policy | cut -d "." -f1)"
+                policy_hcl=$(cat $policy)
+                write_acl_policy "$policy_name" "$policy_hcl" "$bootstrap_token"
+                log_info "Generating token for the policy - $policy_name"
+                local policy_token=$(generate_token "$policy_name" "$policy_name agent policy" $bootstrap_token)        
+                if [[ "$?" -eq 0 ]] && [ -n "${policy_token}" ]; then
+                write_acl_token $policy_token $cluster_tag_value $policy_name $aws_region "ssm"
+                else
+                log_warn "Policy token cannot be generated. Please check the policies."
+                fi 
+              done           
+            else
+            log_warn "Policy directory is empty"
+            fi
+        else   
+        log_warn "Policy directory does not exists. So not generating any policies and tokens"
+		    fi
+
       else
         log_info "Bootstrap token already exists, skipping"
       fi      
