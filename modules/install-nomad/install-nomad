@@ -90,6 +90,13 @@ function install_dependencies {
     log_error "Could not find apt-get or yum. Cannot install dependencies on this OS."
     exit 1
   fi
+
+# if [ ! -d "/opt/gruntwork/bash-commons" ]; then
+#   sudo mkdir -p /opt/gruntwork
+#   git clone --branch v0.1.9 https://github.com/gruntwork-io/bash-commons.git /tmp/bash-commons
+#   sudo cp -r /tmp/bash-commons/modules/bash-commons/src /opt/gruntwork/bash-commons
+# fi
+  
 }
 
 function user_exists {
@@ -117,6 +124,7 @@ function create_nomad_install_paths {
   sudo mkdir -p "$path/bin"
   sudo mkdir -p "$path/config"
   sudo mkdir -p "$path/data"
+  sudo mkdir -p "$path/policy"
 
   log_info "Changing ownership of $path to $username"
   sudo chown -R "$username:$username" "$path"
@@ -174,6 +182,7 @@ function install_binaries {
 
   log_info "Copying Nomad run script to $run_nomad_dest_path"
   sudo cp "$SCRIPT_DIR/../run-nomad/run-nomad" "$run_nomad_dest_path"
+  sudo cp "$SCRIPT_DIR/../run-nomad/"*.sh "$bin_dir/"
   sudo chown "$username:$username" "$run_nomad_dest_path"
   sudo chmod a+x "$run_nomad_dest_path"
 }
