@@ -40,6 +40,7 @@ function print_usage {
   echo -e "  --user\t\tThe user to run Nomad as. Optional. Default is to use the owner of --config-dir."
   echo -e "  --use-sudo\t\tIf set, run the Nomad agent with sudo. By default, sudo is only used if --client is set."
   echo -e "  --environment\t\A single environment variable in the key/value pair form 'KEY=\"val\"' to pass to Nomad as environment variable when starting it up. Repeat this option for additional variables. Optional."
+  echo -e "  --node_class\t\tThe node_class to pass it to Nomad Clients. Optional. valid only if --client is true."
   echo -e "  --skip-nomad-config\tIf this flag is set, don't generate a Nomad configuration file. Optional. Default is false."
   echo
   echo "Example:"
@@ -261,6 +262,7 @@ function generate_nomad_config {
   local -r vault_role="${11}"
   local -r vault_token="${12}"
   local -r cluster_tag_value="${13}"
+  local -r node_class="${14}"
 
 
   local readonly config_path="$config_dir/$NOMAD_CONFIG_FILE"
@@ -290,7 +292,20 @@ instance_id="$cluster_tag_value-$instance_id"
 
   local client_config=""
   if [[ "$client" == "true" ]]; then
-    client_config=$(cat <<EOF
+
+    log_info "Creating client configuration"
+
+    if [ -z "$node_class" ] || [ "$node_class" == "" ]; then
+      log_info "Setting nomad node class to $node_class"
+      client_config=$(cat <<EOF
+client {
+  enabled = true
+  node_class = "$node_class"
+}
+EOF
+)
+fi
+client_config=$(cat <<EOF
 client {
   enabled = true
 }
@@ -584,6 +599,11 @@ function run {
       --enable_telemetry)
         enable_telemetry="true"
         ;;
+      --node_class)
+        assert_not_empty "$key" "$2"
+        node_class="$2"
+        shift
+        ;;
       --skip-nomad-config)
         skip_nomad_config="true"
         ;;
@@ -697,7 +717,7 @@ function run {
   if [[ "$skip_nomad_config" == "true" ]]; then
     log_info "The --skip-nomad-config flag is set, so will not generate a default Nomad config file."
   else
-    generate_nomad_config "$server" "$client" "$num_servers" "$config_dir" "$user" "$enable_acl" "$consul_cluster_tag_value" "$enable_telemetry" "$enable_vault" "$vault_addr" "$vault_role" "$vault_token" "$cluster_tag_value"
+    generate_nomad_config "$server" "$client" "$num_servers" "$config_dir" "$user" "$enable_acl" "$consul_cluster_tag_value" "$enable_telemetry" "$enable_vault" "$vault_addr" "$vault_role" "$vault_token" "$cluster_tag_value" "$node_class"
   fi
 
   generate_systemd_config "$SYSTEMD_CONFIG_PATH" "$config_dir" "$data_dir" "$bin_dir" "$systemd_stdout" "$systemd_stderr" "$user" "$use_sudo" "${environment[@]}"
