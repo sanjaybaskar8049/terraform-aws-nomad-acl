@@ -8,7 +8,6 @@ source "/opt/gruntwork/bash-commons/string.sh"
 source "/opt/gruntwork/bash-commons/assert.sh"
 source "/opt/gruntwork/bash-commons/aws-wrapper.sh"
 
-
 readonly NOMAD_CONFIG_FILE="default.hcl"
 readonly SYSTEMD_CONFIG_PATH="/etc/systemd/system/nomad.service"
 
@@ -40,6 +39,7 @@ function print_usage {
   echo -e "  --user\t\tThe user to run Nomad as. Optional. Default is to use the owner of --config-dir."
   echo -e "  --use-sudo\t\tIf set, run the Nomad agent with sudo. By default, sudo is only used if --client is set."
   echo -e "  --environment\t\A single environment variable in the key/value pair form 'KEY=\"val\"' to pass to Nomad as environment variable when starting it up. Repeat this option for additional variables. Optional."
+  echo -e "  --node-class\t\tThe node_class to pass it to Nomad Clients. Optional. valid only if --client is true."
   echo -e "  --skip-nomad-config\tIf this flag is set, don't generate a Nomad configuration file. Optional. Default is false."
   echo
   echo "Example:"
@@ -96,9 +96,6 @@ function split_by_lines {
   done
 }
 
-
-
-
 function lookup_path_in_instance_metadata {
   local -r path="$1"
   curl --silent --show-error --location "$EC2_INSTANCE_METADATA_URL/$path/"
@@ -141,7 +138,7 @@ function get_instance_tags {
   local count_tags=""
 
   log_info "Looking up tags for Instance $instance_id in $instance_region"
-  for (( i=1; i<="$MAX_RETRIES"; i++ )); do
+  for ((i = 1; i <= "$MAX_RETRIES"; i++)); do
     tags=$(aws ec2 describe-tags \
       --region "$instance_region" \
       --filters "Name=resource-type,Values=instance" "Name=resource-id,Values=${instance_id}")
@@ -232,7 +229,7 @@ function generate_bootstrap_acl_token {
 
   local token
 
-  for (( i=0; i<"$max_retries"; i++ )); do
+  for ((i = 0; i < "$max_retries"; i++)); do
     token=$(nomad acl bootstrap -json | jq '.SecretID' -r)
     if [[ "$token" == "" ]]; then
       log_info "Token could not be obtained, retrying."
@@ -261,7 +258,7 @@ function generate_nomad_config {
   local -r vault_role="${11}"
   local -r vault_token="${12}"
   local -r cluster_tag_value="${13}"
-
+  local -r node_class="${14}"
 
   local readonly config_path="$config_dir/$NOMAD_CONFIG_FILE"
 
@@ -277,88 +274,106 @@ function generate_nomad_config {
 
   local server_config=""
   if [[ "$server" == "true" ]]; then
-    server_config=$(cat <<EOF
+    server_config=$(
+      cat <<EOF
 server {
   enabled = true
   bootstrap_expect = $num_servers
 }
 EOF
-)
-instance_id="$cluster_tag_value-$instance_id"
+    )
+    instance_id="$cluster_tag_value-$instance_id"
 
+  fi
+
+  local node_class_config=""
+  if [[ ! -z "$node_class" ]] || [[ "$node_class" != "" ]]; then
+  log_info "Setting nomad node class to $node_class"
+    node_class_config=$(
+      cat <<EOF
+node_class = "$node_class"
+EOF
+    )
   fi
 
   local client_config=""
   if [[ "$client" == "true" ]]; then
-    client_config=$(cat <<EOF
+
+    log_info "Creating client configuration"
+
+    
+      client_config=$(
+        cat <<EOF
 client {
   enabled = true
+  $node_class_config
 }
 EOF
-)
-instance_id="$cluster_tag_value-$instance_id"
+      )
+    
+    instance_id="$cluster_tag_value-$instance_id"
   fi
 
   local acl_configuration=""
-   if [[ "$enable_acl" == "true" ]]; then
-      log_info "Creating ACL configuration"
-      acl_configuration=$(
+  if [[ "$enable_acl" == "true" ]]; then
+    log_info "Creating ACL configuration"
+    acl_configuration=$(
       cat <<EOF
 acl = {
   enabled = true
 }
 EOF
-)
-   fi
+    )
+  fi
 
   local consul_config=""
   if [[ "$enable_acl" == "true" ]]; then
-     local -r aws_region=$(aws_get_instance_region)
-     log_info "Getting consul ACL token for nomad clients"
-       if [[ -z "$consul_cluster_tag_value" ]]; then
-       log_error "Provide consul cluster tag value to determine the AWS consul cluster & fetch ACL token"
-       exit 1
-       else
-       consul_config=$(
-       cat <<EOF
+    local -r aws_region=$(aws_get_instance_region)
+    log_info "Getting consul ACL token for nomad clients"
+    if [[ -z "$consul_cluster_tag_value" ]]; then
+      log_error "Provide consul cluster tag value to determine the AWS consul cluster & fetch ACL token"
+      exit 1
+    else
+      consul_config=$(
+        cat <<EOF
 consul {
   address = "127.0.0.1:8500",
   token = "$(read_acl_token "$consul_cluster_tag_value" "nomad" "$aws_region" 1 0)"
 }
 EOF
-)                        
-       fi
+      )
+    fi
   else
     consul_config=$(
-    cat <<EOF
+      cat <<EOF
 consul {
  address = "127.0.0.1:8500"
  }
 EOF
-)
- fi
+    )
+  fi
 
- local vault_config=""
- if [[ "$enable_vault" == "true" ]]; then
-   if [[ "$client" == "true" ]]; then
-    log_info "generating vault client config"
-    vault_config=$(
-    cat <<EOF
+  local vault_config=""
+  if [[ "$enable_vault" == "true" ]]; then
+    if [[ "$client" == "true" ]]; then
+      log_info "generating vault client config"
+      vault_config=$(
+        cat <<EOF
 vault {
   enabled = true
   address = "$vault_addr"
   create_from_role = "$vault_role"
 }
 EOF
-)
-  else
-    log_info "generating vault server config"
-    if [ -z "$vault_token" ] || [ "$vault_token" == "" ]; then
-    log_error "You must specify an option for the --vault-token parameter when --enable-vault and --server is specified."
-    exit 1
-    fi
-  vault_config=$(
-    cat <<EOF
+      )
+    else
+      log_info "generating vault server config"
+      if [ -z "$vault_token" ] || [ "$vault_token" == "" ]; then
+        log_error "You must specify an option for the --vault-token parameter when --enable-vault and --server is specified."
+        exit 1
+      fi
+      vault_config=$(
+        cat <<EOF
 vault {
   enabled = true
   address = "$vault_addr"
@@ -366,17 +381,15 @@ vault {
   create_from_role = "$vault_role"
 }
 EOF
-)
- fi
- fi
+      )
+    fi
+  fi
 
-
-
- local telemetry_config=""
- if [[ "$enable_telemetry" == "true" ]]; then
+  local telemetry_config=""
+  if [[ "$enable_telemetry" == "true" ]]; then
     log_info "generating telemetry config"
     telemetry_config=$(
-    cat <<EOF
+      cat <<EOF
 telemetry {
   collection_interval = "1s"
   disable_hostname = true
@@ -385,11 +398,11 @@ telemetry {
   publish_node_metrics = false
 }
 EOF
-)
- fi
+    )
+  fi
 
   log_info "Creating default Nomad config file in $config_path"
-  cat > "$config_path" <<EOF
+  cat >"$config_path" <<EOF
 datacenter = "$availability_zone"
 name       = "$instance_id"
 region     = "$instance_region"
@@ -431,7 +444,8 @@ function generate_systemd_config {
 
   log_info "Creating systemd config file to run Nomad in $systemd_config_path"
 
-  local readonly unit_config=$(cat <<EOF
+  local readonly unit_config=$(
+    cat <<EOF
 [Unit]
 Description="HashiCorp Nomad"
 Documentation=https://www.nomadproject.io/
@@ -439,9 +453,10 @@ Requires=network-online.target
 After=network-online.target
 ConditionalFileNotEmpty=$config_path
 EOF
-)
+  )
 
-  local readonly service_config=$(cat <<EOF
+  local readonly service_config=$(
+    cat <<EOF
 [Service]
 User=$nomad_user
 Group=$nomad_user
@@ -452,7 +467,7 @@ Restart=on-failure
 LimitNOFILE=65536
 $(split_by_lines "Environment=" "${environment[@]}")
 EOF
-)
+  )
 
   local log_config=""
   if [[ ! -z $nomad_sytemd_stdout ]]; then
@@ -462,16 +477,17 @@ EOF
     log_config+="StandardError=$nomad_sytemd_stderr\n"
   fi
 
-  local readonly install_config=$(cat <<EOF
+  local readonly install_config=$(
+    cat <<EOF
 [Install]
 WantedBy=multi-user.target
 EOF
-)
+  )
 
-  echo -e "$unit_config" > "$systemd_config_path"
-  echo -e "$service_config" >> "$systemd_config_path"
-  echo -e "$log_config" >> "$systemd_config_path"
-  echo -e "$install_config" >> "$systemd_config_path"
+  echo -e "$unit_config" >"$systemd_config_path"
+  echo -e "$service_config" >>"$systemd_config_path"
+  echo -e "$log_config" >>"$systemd_config_path"
+  echo -e "$install_config" >>"$systemd_config_path"
 }
 
 function start_nomad {
@@ -505,116 +521,120 @@ function run {
   local consul_cluster_tag_value=""
   local vault_addr=""
   local enable_vault="false"
-  
 
   while [[ $# > 0 ]]; do
     local key="$1"
 
     case "$key" in
-      --server)
-        server="true"
-        ;;
-      --client)
-        client="true"
-        ;;
-      --num-servers)
-        num_servers="$2"
-        shift
-        ;;
-      --config-dir)
-        assert_not_empty "$key" "$2"
-        config_dir="$2"
-        shift
-        ;;
-      --data-dir)
-        assert_not_empty "$key" "$2"
-        data_dir="$2"
-        shift
-        ;;
-      --bin-dir)
-        assert_not_empty "$key" "$2"
-        bin_dir="$2"
-        shift
-        ;;
-      --systemd-stdout)
-        assert_not_empty "$key" "$2"
-        systemd_stdout="$2"
-        shift
-        ;;
-      --systemd-stderr)
-        assert_not_empty "$key" "$2"
-        systemd_stderr="$2"
-        shift
-        ;;
-      --user)
-        assert_not_empty "$key" "$2"
-        user="$2"
-        shift
-        ;;
-      --cluster-tag-key)
-        assert_not_empty "$key" "$2"
-        cluster_tag_key="$2"
-        shift
-        ;;
-      --cluster-tag-value)
-        assert_not_empty "$key" "$2"
-        cluster_tag_value="$2"
-        shift
-        ;;
-      --consul-cluster-tag-value)
-        assert_not_empty "$key" "$2"
-        consul_cluster_tag_value="$2"
-        shift
-        ;;
-      --vault-addr)
-        assert_not_empty "$key" "$2"
-        vault_addr="$2"
-        shift
-        ;;
-      --vault-role)
-        assert_not_empty "$key" "$2"
-        vault_role="$2"
-        shift
-        ;;
-      --vault-token)
-        assert_not_empty "$key" "$2"
-        vault_token="$2"
-        shift
-        ;;
-      --enable_telemetry)
-        enable_telemetry="true"
-        ;;
-      --skip-nomad-config)
-        skip_nomad_config="true"
-        ;;
-      --use-sudo)
-        use_sudo="true"
-        ;;
-      --environment)
-        assert_not_empty "$key" "$2"
-        environment+=("$2")
-        shift
-        ;;
-      --enable-acl)
-        enable_acl="true"
-        ;;
-      --enable-vault)
-        enable_vault="true"
-        ;;
-      --acl-storage-type)
-        assert_not_empty "$key" "$2"
-        acl_storage_type="$2"
-        shift
-        ;;
-      --help)
-        print_usage
-        exit
-        ;;
-      *)
-        log_error "Unrecognized argument: $key"
-        print_usage
-        exit 1
-        ;;
+    --server)
+      server="true"
+      ;;
+    --client)
+      client="true"
+      ;;
+    --num-servers)
+      num_servers="$2"
+      shift
+      ;;
+    --config-dir)
+      assert_not_empty "$key" "$2"
+      config_dir="$2"
+      shift
+      ;;
+    --data-dir)
+      assert_not_empty "$key" "$2"
+      data_dir="$2"
+      shift
+      ;;
+    --bin-dir)
+      assert_not_empty "$key" "$2"
+      bin_dir="$2"
+      shift
+      ;;
+    --systemd-stdout)
+      assert_not_empty "$key" "$2"
+      systemd_stdout="$2"
+      shift
+      ;;
+    --systemd-stderr)
+      assert_not_empty "$key" "$2"
+      systemd_stderr="$2"
+      shift
+      ;;
+    --user)
+      assert_not_empty "$key" "$2"
+      user="$2"
+      shift
+      ;;
+    --cluster-tag-key)
+      assert_not_empty "$key" "$2"
+      cluster_tag_key="$2"
+      shift
+      ;;
+    --cluster-tag-value)
+      assert_not_empty "$key" "$2"
+      cluster_tag_value="$2"
+      shift
+      ;;
+    --consul-cluster-tag-value)
+      assert_not_empty "$key" "$2"
+      consul_cluster_tag_value="$2"
+      shift
+      ;;
+    --vault-addr)
+      assert_not_empty "$key" "$2"
+      vault_addr="$2"
+      shift
+      ;;
+    --vault-role)
+      assert_not_empty "$key" "$2"
+      vault_role="$2"
+      shift
+      ;;
+    --vault-token)
+      assert_not_empty "$key" "$2"
+      vault_token="$2"
+      shift
+      ;;
+    --enable_telemetry)
+      enable_telemetry="true"
+      ;;
+    --node-class)
+      assert_not_empty "$key" "$2"
+      node_class="$2"
+      shift
+      ;;
+    --skip-nomad-config)
+      skip_nomad_config="true"
+      ;;
+    --use-sudo)
+      use_sudo="true"
+      ;;
+    --environment)
+      assert_not_empty "$key" "$2"
+      environment+=("$2")
+      shift
+      ;;
+    --enable-acl)
+      enable_acl="true"
+      ;;
+    --enable-vault)
+      enable_vault="true"
+      ;;
+    --acl-storage-type)
+      assert_not_empty "$key" "$2"
+      acl_storage_type="$2"
+      shift
+      ;;
+    --help)
+      print_usage
+      exit
+      ;;
+    *)
+      log_error "Unrecognized argument: $key"
+      print_usage
+      exit 1
+      ;;
     esac
 
     shift
@@ -629,16 +649,18 @@ function run {
     local storage_type_matched="false"
 
     # Source appropriate storage provider script
-    case "$acl_storage_type" in 
-        'ssm' | 'SSM')
-        storage_type_matched="true"
-        source ${SCRIPT_DIR}/nomad-bootstrap-ssm.sh;;
+    case "$acl_storage_type" in
+    'ssm' | 'SSM')
+      storage_type_matched="true"
+      source ${SCRIPT_DIR}/nomad-bootstrap-ssm.sh
+      ;;
 
-        *)
-        if [ $storage_type_matched="false" ]; then
-            log_error "ACL storage type '${acl_storage_type}' is not supported."
-            exit 1
-        fi;;
+    *)
+      if [ $storage_type_matched="false" ]; then
+        log_error "ACL storage type '${acl_storage_type}' is not supported."
+        exit 1
+      fi
+      ;;
 
     esac
   fi
@@ -697,7 +719,7 @@ function run {
   if [[ "$skip_nomad_config" == "true" ]]; then
     log_info "The --skip-nomad-config flag is set, so will not generate a default Nomad config file."
   else
-    generate_nomad_config "$server" "$client" "$num_servers" "$config_dir" "$user" "$enable_acl" "$consul_cluster_tag_value" "$enable_telemetry" "$enable_vault" "$vault_addr" "$vault_role" "$vault_token" "$cluster_tag_value"
+    generate_nomad_config "$server" "$client" "$num_servers" "$config_dir" "$user" "$enable_acl" "$consul_cluster_tag_value" "$enable_telemetry" "$enable_vault" "$vault_addr" "$vault_role" "$vault_token" "$cluster_tag_value" "$node_class"
   fi
 
   generate_systemd_config "$SYSTEMD_CONFIG_PATH" "$config_dir" "$data_dir" "$bin_dir" "$systemd_stdout" "$systemd_stderr" "$user" "$use_sudo" "${environment[@]}"
@@ -705,7 +727,7 @@ function run {
 
   if [[ "$enable_acl" == "true" ]] && [ "${server}" == "true" ]; then
     local -r asg_name=$(aws_wrapper_get_asg_name $MAX_RETRIES $SLEEP_BETWEEN_RETRIES_SEC)
-     local -r aws_region=$(aws_get_instance_region)
+    local -r aws_region=$(aws_get_instance_region)
     local -r instance_id=$(aws_get_instance_id)
 
     local bootstrap_token
@@ -729,29 +751,29 @@ function run {
         log_info "Checking if additional policies and tokens are needed"
         POLICY_DIR="/opt/nomad/policy"
         if [[ -d "$POLICY_DIR" ]] && [ "${server}" == "true" ]; then
-            if [ "$(ls -A $POLICY_DIR)" ]; then
-              for policy in $POLICY_DIR/*; do
-                policy_name="$(basename $policy | cut -d "." -f1)"
-                policy_hcl=$(cat $policy)
-                write_acl_policy "$policy_name" "$policy_hcl" "$bootstrap_token"
-                log_info "Generating token for the policy - $policy_name"
-                local policy_token=$(generate_token "$policy_name" "$policy_name agent policy" $bootstrap_token)        
-                if [[ "$?" -eq 0 ]] && [ -n "${policy_token}" ]; then
+          if [ "$(ls -A $POLICY_DIR)" ]; then
+            for policy in $POLICY_DIR/*; do
+              policy_name="$(basename $policy | cut -d "." -f1)"
+              policy_hcl=$(cat $policy)
+              write_acl_policy "$policy_name" "$policy_hcl" "$bootstrap_token"
+              log_info "Generating token for the policy - $policy_name"
+              local policy_token=$(generate_token "$policy_name" "$policy_name agent policy" $bootstrap_token)
+              if [[ "$?" -eq 0 ]] && [ -n "${policy_token}" ]; then
                 write_acl_token $policy_token $cluster_tag_value $policy_name $aws_region "ssm"
-                else
+              else
                 log_warn "Policy token cannot be generated. Please check the policies."
-                fi 
-              done           
-            else
+              fi
+            done
+          else
             log_warn "Policy directory is empty"
-            fi
-        else   
-        log_warn "Policy directory does not exists. So not generating any policies and tokens"
-		    fi
+          fi
+        else
+          log_warn "Policy directory does not exists. So not generating any policies and tokens"
+        fi
 
       else
         log_info "Bootstrap token already exists, skipping"
-      fi      
+      fi
     fi
 
     # If the bootstrap token isn't already read (i.e. if this is running on the non rally point node)
