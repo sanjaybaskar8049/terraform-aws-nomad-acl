@@ -113,6 +113,13 @@ variable "tenancy" {
   default     = "default"
 }
 
+variable "root_device_name" {
+  description = "The device name of the root device volume"
+  type        = string
+  default     = "/dev/sda1"
+}
+
+
 variable "root_volume_ebs_optimized" {
   description = "If true, the launched EC2 instance will be EBS-optimized."
   type        = bool
@@ -251,9 +258,9 @@ variable "acl_store_type" {
   type        = string
   default     = ""
   validation {
-    condition     = contains(["ssm",""],var.acl_store_type)
+    condition     = contains(["ssm", ""], var.acl_store_type)
     error_message = "You must specify a supported store type for ACL tokens. Currently the only allowed value is 'ssm'."
-  } 
+  }
 }
 variable "enable_iam_setup" {
   description = "If true, create the IAM Role, IAM Instance Profile, and IAM Policies. If false, these will not be created, and you can pass in your own IAM Instance Profile via var.iam_instance_profile_name."
