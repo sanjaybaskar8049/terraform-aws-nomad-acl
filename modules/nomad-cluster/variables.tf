@@ -144,6 +144,12 @@ variable "root_volume_delete_on_termination" {
   type        = bool
 }
 
+variable "root_volume_encrypted" {
+  description = "Encrypt the root volume at rest"
+  type        = bool
+  default     = false
+}
+
 variable "launch_template_version" {
   description = "The version of the launch template to use. If not provided, the latest version will be used."
   type        = string
