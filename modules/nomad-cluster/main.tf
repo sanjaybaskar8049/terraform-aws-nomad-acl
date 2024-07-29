@@ -147,7 +147,7 @@ resource "aws_launch_template" "launch_template" {
 
   vpc_security_group_ids = concat(
     [aws_security_group.lc_security_group.id],
-    var.additional_security_group_ids,
+    var.security_groups,
   )
 
   placement {
