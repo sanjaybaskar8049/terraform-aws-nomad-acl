@@ -15,8 +15,8 @@ terraform {
 resource "aws_autoscaling_group" "autoscaling_group" {
   launch_template {
     id      = aws_launch_template.launch_template.id
-    version = "$Latest"
-  }
+    version = var.launch_template_version # by default, this will be "$Latest"
+  } 
 
   name                = var.asg_name
   availability_zones  = var.availability_zones
@@ -68,6 +68,7 @@ resource "aws_autoscaling_group" "autoscaling_group" {
   }
 }
 
+# marking the below section as obsolete and replacing with aws_launch_template
 # ---------------------------------------------------------------------------------------------------------------------
 # CREATE LAUNCH CONFIGURATION TO DEFINE WHAT RUNS ON EACH INSTANCE IN THE ASG
 # ---------------------------------------------------------------------------------------------------------------------

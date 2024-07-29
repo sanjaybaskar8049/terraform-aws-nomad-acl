@@ -144,6 +144,13 @@ variable "root_volume_delete_on_termination" {
   type        = bool
 }
 
+variable "launch_template_version" {
+  description = "The version of the launch template to use. If not provided, the latest version will be used."
+  type        = string
+  default     = "$Latest"  
+}
+
+
 variable "wait_for_capacity_timeout" {
   description = "A maximum duration that Terraform should wait for ASG instances to be healthy before timing out. Setting this to '0' causes Terraform to skip all Capacity Waiting behavior."
   type        = string
