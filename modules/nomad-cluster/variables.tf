@@ -18,6 +18,13 @@ variable "instance_type" {
   type        = string
 }
 
+variable "spot_price" {
+  description = "The maximum hourly price to pay for EC2 Spot Instances."
+  type        = number
+  default     = null
+}
+
+
 variable "vpc_id" {
   description = "The ID of the VPC in which to deploy the cluster"
   type        = string
