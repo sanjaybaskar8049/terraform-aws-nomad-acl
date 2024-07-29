@@ -165,6 +165,16 @@ resource "aws_launch_template" "launch_template" {
     }
   }
 
+ dynamic "instance_market_options" {
+    for_each = var.spot_price != null ? [1] : []
+    content {
+      market_type = "spot"
+      spot_options {
+        max_price = var.spot_price
+      }
+    }
+  }
+
   lifecycle {
     create_before_destroy = true
   }
