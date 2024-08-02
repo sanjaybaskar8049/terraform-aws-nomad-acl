@@ -20,6 +20,8 @@ data-center aware scheduler. A Nomad cluster typically includes a small number o
 for being part of the [consensus protocol](https://www.nomadproject.io/docs/internals/consensus.html), and a larger
 number of client nodes, which are used for running jobs.
 
+Since the base repository has been archived, this fork has been enhanced with additional features including support for bootstrapping the Nomad cluster with ACL, policy, and token management, node class options to categorize the type of clients available, and more.
+
 ![Nomad architecture](https://raw.githubusercontent.com/hashicorp/terraform-aws-nomad/master/_docs/architecture.png)
 
 
