@@ -137,6 +137,11 @@ resource "aws_launch_template" "launch_template" {
   user_data     = base64encode(var.user_data)
 
   key_name = var.ssh_key_name
+  metadata_options {
+    http_tokens               = "required"   # enforces IMDSv2
+    http_put_response_hop_limit = 1          # 
+    http_endpoint             = "enabled"    # enables the metadata endpoint
+  }
 
   iam_instance_profile {
     name = var.enable_iam_setup ? element(
