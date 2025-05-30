@@ -111,7 +111,7 @@ function lookup_path_in_instance_metadata {
 function lookup_path_in_instance_dynamic_data {
   local -r path="$1"
   local -r token="$2"
-  curl --silent --show-error --location "$EC2_INSTANCE_DYNAMIC_DATA_URL/$path/"
+  curl --silent --show-error --location --header "X-aws-ec2-metadata-token: $token" "$EC2_INSTANCE_DYNAMIC_DATA_URL/$path/"
 }
 
 function get_instance_ip_address {
