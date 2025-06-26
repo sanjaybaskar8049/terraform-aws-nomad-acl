@@ -287,3 +287,12 @@ variable "enable_iam_setup" {
   type        = bool
   default     = true
 }
+variable "metadata_hop_limit" {
+  description = "no. of network hops allowed to reach the Instance Metadata Service. Default = 1 (most secure; no proxies). Increase only as needed for your proxies. Range: 1–64."
+  type        = number
+  default     = 1
+  validation {
+      condition     = var.metadata_hop_limit >= 1 && var.metadata_hop_limit <= 64
+      error_message = "metadata_hop_limit must be between 1 and 64."
+    }
+}
