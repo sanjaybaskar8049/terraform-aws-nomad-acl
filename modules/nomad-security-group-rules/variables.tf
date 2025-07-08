@@ -36,3 +36,8 @@ variable "serf_port" {
   default     = 4648
 }
 
+variable "consul_gossip_port" {
+  description = "The port for Consul's Serf LAN (gossip) protocol. Used for inter-agent communication."
+  type        = number
+  default     = 8301
+}

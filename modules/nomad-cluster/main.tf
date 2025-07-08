@@ -237,6 +237,7 @@ module "security_group_rules" {
   http_port = var.http_port
   rpc_port  = var.rpc_port
   serf_port = var.serf_port
+  consul_gossip_port = var.consul_gossip_port
 }
 
 # ---------------------------------------------------------------------------------------------------------------------

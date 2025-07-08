@@ -56,3 +56,15 @@ resource "aws_security_group_rule" "allow_serf_udp_inbound" {
   security_group_id = var.security_group_id
 }
 
+resource "aws_security_group_rule" "allow_consul_gossip_tcp_inbound" {
+  count = length(var.allowed_inbound_cidr_blocks) >= 1 ? 1 : 0 
+
+  type              = "ingress"
+  from_port         = var.consul_gossip_port
+  to_port           = var.consul_gossip_port
+  protocol          = "tcp"
+  cidr_blocks       = var.allowed_inbound_cidr_blocks 
+  description       = "Allow inbound TCP for Consul Serf gossip"
+
+  security_group_id = var.security_group_id
+}
