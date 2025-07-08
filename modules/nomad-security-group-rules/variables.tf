@@ -41,3 +41,4 @@ variable "consul_gossip_port" {
   type        = number
   default     = 8301
 }
+

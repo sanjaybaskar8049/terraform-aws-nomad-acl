@@ -218,7 +218,6 @@ variable "consul_gossip_port" {
   default     = 8301
 }
 
-
 variable "ssh_port" {
   description = "The port used for SSH connections"
   type        = number
