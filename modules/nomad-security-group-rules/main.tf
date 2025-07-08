@@ -65,6 +65,5 @@ resource "aws_security_group_rule" "allow_consul_gossip_tcp_inbound" {
   protocol          = "tcp"
   cidr_blocks       = var.allowed_inbound_cidr_blocks 
   description       = "Allow inbound TCP for Consul Serf gossip"
-
   security_group_id = var.security_group_id
 } 
