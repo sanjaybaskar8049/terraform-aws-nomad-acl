@@ -267,6 +267,7 @@ function generate_nomad_config {
   local -r vault_token="${12}"
   local -r cluster_tag_value="${13}"
   local -r node_class="${14}"
+  local -r use_ip_for_node_name="${15:-false}"
 
   local readonly config_path="$config_dir/$NOMAD_CONFIG_FILE"
 
@@ -287,6 +288,26 @@ function generate_nomad_config {
   instance_region=$(get_instance_region "$metadata_token")
   availability_zone=$(get_instance_availability_zone "$metadata_token")
 
+  local node_prefix="$instance_id"
+  log_info "Defaulting Nomad node name base to AWS instance ID ($instance_id)."
+
+  if [[ "$use_ip_for_node_name" == "true" ]] && [[ -n "$instance_ip_address" ]]; then
+    log_info "Parameter --use-ip-for-node-name enabled. Using IP ($instance_ip_address) as prefix to ID ($instance_id) for Nomad node name."
+    node_prefix=$instance_ip_address
+  
+  elif [[ "$use_ip_for_node_name" == "true" ]] && [[ -z "$instance_ip_address" ]]; then
+    log_warn "Parameter --use-ip-for-node-name enabled, but instance IP is empty. Falling back to only instance ID ($instance_id)."
+  fi
+
+  local final_node_name=""
+  if [[ -n "$cluster_tag_value" ]]; then
+    final_node_name="$cluster_tag_value-$node_prefix"
+    log_info "Prepending cluster tag value ($cluster_tag_value) to Nomad node name: $final_node_name."
+  else
+    final_node_name="$node_prefix"
+    log_info "No cluster tag value. Nomad node name set to: $final_node_name."
+  fi
+
   local server_config=""
   if [[ "$server" == "true" ]]; then
     server_config=$(
@@ -297,7 +318,7 @@ server {
 }
 EOF
     )
-    instance_id="$cluster_tag_value-$instance_id"
+   # instance_id="$cluster_tag_value-$instance_id"
 
   fi
 
@@ -326,7 +347,7 @@ client {
 EOF
       )
     
-    instance_id="$cluster_tag_value-$instance_id"
+   # instance_id="$cluster_tag_value-$instance_id"
   fi
 
   local acl_configuration=""
@@ -419,7 +440,7 @@ EOF
   log_info "Creating default Nomad config file in $config_path"
   cat >"$config_path" <<EOF
 datacenter = "$availability_zone"
-name       = "$instance_id"
+name       = "$final_node_name"
 region     = "$instance_region"
 bind_addr  = "0.0.0.0"
 advertise {
@@ -536,6 +557,7 @@ function run {
   local consul_cluster_tag_value=""
   local vault_addr=""
   local enable_vault="false"
+  local use_ip_for_node_name="false" 
 
   while [[ $# > 0 ]]; do
     local key="$1"
@@ -639,6 +661,10 @@ function run {
     --acl-storage-type)
       assert_not_empty "$key" "$2"
       acl_storage_type="$2"
+      shift
+      ;;
+    --use-ip-for-node-name)
+      use_ip_for_node_name="$2"
       shift
       ;;
     --help)
