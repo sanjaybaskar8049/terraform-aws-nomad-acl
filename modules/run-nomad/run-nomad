@@ -552,6 +552,7 @@ function run {
   local client="false"
   local num_servers=""
   local naming_strategy="instance-id"  # default
+  local node_prefix=""
   local config_dir=""
   local data_dir=""
   local bin_dir=""
@@ -583,6 +584,11 @@ function run {
     --naming-strategy)
       assert_not_empty "$key" "$2"
       naming_strategy="$2"
+      shift
+      ;;
+    --node-prefix)
+      assert_not_empty "$key" "$2"
+      node_prefix="$2"
       shift
       ;;
     --config-dir)
