@@ -267,7 +267,7 @@ function generate_nomad_config {
   local -r vault_token="${12}"
   local -r cluster_tag_value="${13}"
   local -r node_class="${14}"
-  local -r use_ip_for_node_name="${15:-false}"
+  local -r node_name="${15}"
 
   local readonly config_path="$config_dir/$NOMAD_CONFIG_FILE"
 
@@ -288,25 +288,8 @@ function generate_nomad_config {
   instance_region=$(get_instance_region "$metadata_token")
   availability_zone=$(get_instance_availability_zone "$metadata_token")
 
-  local node_prefix="$instance_id"
-  log_info "Defaulting Nomad node name base to AWS instance ID ($instance_id)."
 
-  if [[ "$use_ip_for_node_name" == "true" ]] && [[ -n "$instance_ip_address" ]]; then
-    log_info "Parameter --use-ip-for-node-name enabled. Using IP ($instance_ip_address) as prefix to ID ($instance_id) for Nomad node name."
-    node_prefix=$instance_ip_address
-  
-  elif [[ "$use_ip_for_node_name" == "true" ]] && [[ -z "$instance_ip_address" ]]; then
-    log_warn "Parameter --use-ip-for-node-name enabled, but instance IP is empty. Falling back to only instance ID ($instance_id)."
-  fi
-
-  local final_node_name=""
-  if [[ -n "$cluster_tag_value" ]]; then
-    final_node_name="$cluster_tag_value-$node_prefix"
-    log_info "Prepending cluster tag value ($cluster_tag_value) to Nomad node name: $final_node_name."
-  else
-    final_node_name="$node_prefix"
-    log_info "No cluster tag value. Nomad node name set to: $final_node_name."
-  fi
+  log_info "Using node_name=\"$node_name\" (strategy: $naming_strategy)"  
 
   local server_config=""
   if [[ "$server" == "true" ]]; then
@@ -319,6 +302,7 @@ server {
 EOF
     )
    # instance_id="$cluster_tag_value-$instance_id"
+  log_info "Using node_name=\"$node_name\" (strategy: $naming_strategy)"
 
   fi
 
@@ -440,7 +424,7 @@ EOF
   log_info "Creating default Nomad config file in $config_path"
   cat >"$config_path" <<EOF
 datacenter = "$availability_zone"
-name       = "$final_node_name"
+name       = "$node_name"
 region     = "$instance_region"
 bind_addr  = "0.0.0.0"
 advertise {
@@ -540,10 +524,34 @@ function get_owner_of_path {
   ls -ld "$path" | awk '{print $3}'
 }
 
+function compute_node_name {
+  local naming_strategy="$1"
+  local node_prefix="$2"
+  local base
+  case "$naming_strategy" in
+    instance-id)
+      base="$(aws_get_instance_id)"
+      ;;
+    instance-ip)
+      base="$(aws_wrapper_get_hostname | cut -d. -f1)"
+      ;;
+    *)
+      log_error "Invalid naming_strategy: '$naming_strategy'. Must be 'instance-id' or 'instance-ip'."
+      exit 1
+      ;;
+  esac
+  if [[ -n "$node_prefix" ]]; then
+    echo "${node_prefix}-${base}"
+  else
+    echo "$base"
+  fi
+}
+
 function run {
   local server="false"
   local client="false"
   local num_servers=""
+  local naming_strategy="instance-id"  # default
   local config_dir=""
   local data_dir=""
   local bin_dir=""
@@ -557,7 +565,6 @@ function run {
   local consul_cluster_tag_value=""
   local vault_addr=""
   local enable_vault="false"
-  local use_ip_for_node_name="false" 
 
   while [[ $# > 0 ]]; do
     local key="$1"
@@ -571,6 +578,11 @@ function run {
       ;;
     --num-servers)
       num_servers="$2"
+      shift
+      ;;
+    --naming-strategy)
+      assert_not_empty "$key" "$2"
+      naming_strategy="$2"
       shift
       ;;
     --config-dir)
@@ -663,10 +675,6 @@ function run {
       acl_storage_type="$2"
       shift
       ;;
-    --use-ip-for-node-name)
-      use_ip_for_node_name="$2"
-      shift
-      ;;
     --help)
       print_usage
       exit
@@ -705,6 +713,8 @@ function run {
 
     esac
   fi
+  node_name="$(compute_node_name "$naming_strategy" "$node_prefix")"
+  log_info "computed node_name=\"$node_name\" (strategy=$naming_strategy, prefix=$node_prefix)"
 
   if [[ "$server" == "true" ]]; then
     assert_not_empty "--num-servers" "$num_servers"
