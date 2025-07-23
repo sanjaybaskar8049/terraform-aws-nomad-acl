@@ -294,12 +294,12 @@ function generate_nomad_config {
       cat <<EOF
 server {
   enabled = true
-  bootstrap_expect = $num_servers
+  bootstrap_expect = $num_servers 
 }
 EOF
     )
    # instance_id="$cluster_tag_value-$instance_id"
-  log_info "Using node_name=\"$node_name\" (strategy: $naming_strategy)"
+  log_info "Using node_name=\"$node_name\" (strategy: $naming_strategy)" 
 
   fi
 
@@ -773,7 +773,7 @@ function run {
   if [[ "$skip_nomad_config" == "true" ]]; then
     log_info "The --skip-nomad-config flag is set, so will not generate a default Nomad config file."
   else
-    generate_nomad_config "$server" "$client" "$num_servers" "$config_dir" "$user" "$enable_acl" "$consul_cluster_tag_value" "$enable_telemetry" "$enable_vault" "$vault_addr" "$vault_role" "$vault_token" "$cluster_tag_value" "$node_class"
+    generate_nomad_config "$server" "$client" "$num_servers" "$config_dir" "$user" "$enable_acl" "$consul_cluster_tag_value" "$enable_telemetry" "$enable_vault" "$vault_addr" "$vault_role" "$vault_token" "$cluster_tag_value" "$node_class" "$node_name"
   fi
 
   generate_systemd_config "$SYSTEMD_CONFIG_PATH" "$config_dir" "$data_dir" "$bin_dir" "$systemd_stdout" "$systemd_stderr" "$user" "$use_sudo" "${environment[@]}"
